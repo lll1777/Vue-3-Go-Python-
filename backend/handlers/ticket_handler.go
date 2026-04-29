@@ -48,6 +48,7 @@ type EscalateRequest struct {
 
 var ticketService = services.NewTicketService()
 var slaService = services.NewSLAService()
+var analysisService = services.NewAnalysisService()
 
 func GetTickets(c *gin.Context) {
 	userID := middleware.GetCurrentUserID(c)
@@ -560,5 +561,131 @@ func GetSimilarCases(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code": 200,
 		"data": result,
+	})
+}
+
+type AnalysisCallbackRequest struct {
+	RequestID   string      `json:"request_id" binding:"required"`
+	TicketID    uint        `json:"ticket_id" binding:"required"`
+	EvidenceID  uint        `json:"evidence_id" binding:"required"`
+	Status      string      `json:"status" binding:"required"`
+	Result      interface{} `json:"result"`
+	Error       string      `json:"error"`
+	CompletedAt string      `json:"completed_at"`
+}
+
+func AnalysisCallback(c *gin.Context) {
+	var req AnalysisCallbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "参数错误",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	callbackData := &services.AnalysisCallbackData{
+		RequestID:   req.RequestID,
+		TicketID:    req.TicketID,
+		EvidenceID:  req.EvidenceID,
+		Status:      req.Status,
+		Result:      req.Result,
+		Error:       req.Error,
+		CompletedAt: req.CompletedAt,
+	}
+
+	if err := analysisService.ProcessCallback(callbackData); err != nil {
+		if err == services.ErrAnalysisRequestNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    404,
+				"message": "分析请求不存在",
+			})
+			return
+		}
+		if err == services.ErrRequestIDMismatch {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    400,
+				"message": "请求ID不匹配",
+			})
+			return
+		}
+		if err == services.ErrTicketIDMismatch {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    400,
+				"message": "工单ID不匹配",
+			})
+			return
+		}
+		if err == services.ErrAnalysisAlreadyCompleted {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":    409,
+				"message": "分析请求已处理完成",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "处理回调失败",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "回调处理成功",
+	})
+}
+
+func GetAnalysisStatus(c *gin.Context) {
+	requestID := c.Param("request_id")
+	if requestID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "缺少请求ID",
+		})
+		return
+	}
+
+	request, err := analysisService.GetAnalysisStatus(requestID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "分析请求不存在",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 200,
+		"data": request,
+	})
+}
+
+func GetTicketAnalysisStatus(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的工单ID",
+		})
+		return
+	}
+
+	analyses, err := analysisService.GetTicketAnalyses(uint(id))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取分析状态失败",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 200,
+		"data": analyses,
 	})
 }
