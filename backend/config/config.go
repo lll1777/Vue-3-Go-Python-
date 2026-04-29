@@ -14,6 +14,7 @@ type Config struct {
 	Log           LogConfig           `mapstructure:"log"`
 	RuleEngine    RuleEngineConfig    `mapstructure:"rule_engine"`
 	ImageAnalysis ImageAnalysisConfig `mapstructure:"image_analysis"`
+	MLService     MLServiceConfig     `mapstructure:"ml_service"`
 	SLA           SLAConfig           `mapstructure:"sla"`
 }
 
@@ -46,6 +47,11 @@ type RuleEngineConfig struct {
 
 type ImageAnalysisConfig struct {
 	ServiceURL string `mapstructure:"service_url"`
+}
+
+type MLServiceConfig struct {
+	URL     string `mapstructure:"url"`
+	Timeout int    `mapstructure:"timeout"`
 }
 
 type SLAConfig struct {

@@ -21,7 +21,11 @@ rule_engine:
   service_url: http://localhost:5000
 
 image_analysis:
-  service_url: http://localhost:5001
+  service_url: http://localhost:5000
+
+ml_service:
+  url: http://localhost:5000
+  timeout: 60
 
 sla:
   evidence_hours: 24
