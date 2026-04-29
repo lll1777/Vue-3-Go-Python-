@@ -69,6 +69,14 @@ func SetupRouter() *gin.Engine {
 		{
 			evidence.POST("/upload", handlers.UploadEvidence)
 		}
+
+		analysis := api.Group("/analysis")
+		{
+			analysis.POST("/callback", handlers.AnalysisCallback)
+			analysis.GET("/status/:request_id", handlers.GetAnalysisStatus)
+		}
+
+		tickets.GET("/:id/analysis-status", handlers.GetTicketAnalysisStatus)
 	}
 
 	return r

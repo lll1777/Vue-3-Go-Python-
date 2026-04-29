@@ -3,6 +3,13 @@ from flask_cors import CORS
 import os
 import sys
 import logging
+import uuid
+import threading
+import time
+import requests
+from typing import Optional, Dict, Any
+from dataclasses import dataclass, field
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +26,9 @@ UPLOAD_FOLDER = './uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+CALLBACK_TIMEOUT = 30
+MAX_RETRY_COUNT = 3
+
 from rule_engine import RuleEngine
 from image_analysis import ImageAnalyzer
 from case_matcher import CaseMatcher
@@ -30,6 +40,201 @@ image_analyzer = ImageAnalyzer()
 case_matcher = CaseMatcher()
 seller_score_calc = SellerScoreCalculator()
 nlp_analyzer = NLPAnalyzer()
+
+
+@dataclass
+class AnalysisRequest:
+    request_id: str
+    ticket_id: int
+    evidence_id: int
+    analysis_type: str
+    callback_url: Optional[str] = None
+    status: str = 'pending'
+    created_at: datetime = field(default_factory=datetime.now)
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    retry_count: int = 0
+
+
+class AsyncAnalysisManager:
+    def __init__(self):
+        self.requests: Dict[str, AnalysisRequest] = {}
+        self._lock = threading.Lock()
+
+    def create_request(
+        self,
+        ticket_id: int,
+        evidence_id: int,
+        analysis_type: str,
+        callback_url: Optional[str] = None
+    ) -> AnalysisRequest:
+        request_id = str(uuid.uuid4())
+        with self._lock:
+            req = AnalysisRequest(
+                request_id=request_id,
+                ticket_id=ticket_id,
+                evidence_id=evidence_id,
+                analysis_type=analysis_type,
+                callback_url=callback_url,
+                status='pending'
+            )
+            self.requests[request_id] = req
+        return req
+
+    def get_request(self, request_id: str) -> Optional[AnalysisRequest]:
+        with self._lock:
+            return self.requests.get(request_id)
+
+    def update_request(
+        self,
+        request_id: str,
+        status: str,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None
+    ) -> bool:
+        with self._lock:
+            req = self.requests.get(request_id)
+            if req:
+                req.status = status
+                req.result = result
+                req.error = error
+                return True
+        return False
+
+    def validate_request(
+        self,
+        request_id: str,
+        ticket_id: int,
+        evidence_id: int
+    ) -> tuple[bool, str]:
+        req = self.get_request(request_id)
+        if not req:
+            return False, f"Analysis request not found: {request_id}"
+
+        if req.ticket_id != ticket_id:
+            return False, f"Ticket ID mismatch: expected {req.ticket_id}, got {ticket_id}"
+
+        if req.evidence_id != evidence_id:
+            return False, f"Evidence ID mismatch: expected {req.evidence_id}, got {evidence_id}"
+
+        if req.status == 'completed' or req.status == 'failed':
+            return False, f"Request already processed: {req.status}"
+
+        return True, "Validation successful"
+
+
+async_analysis_manager = AsyncAnalysisManager()
+
+
+def send_callback(
+    callback_url: str,
+    request_id: str,
+    ticket_id: int,
+    evidence_id: int,
+    status: str,
+    result: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+    retry_count: int = 0
+) -> bool:
+    if not callback_url:
+        logger.warning("No callback URL provided")
+        return True
+
+    payload = {
+        'request_id': request_id,
+        'ticket_id': ticket_id,
+        'evidence_id': evidence_id,
+        'status': status,
+        'completed_at': datetime.now().isoformat()
+    }
+
+    if result:
+        payload['result'] = result
+    if error:
+        payload['error'] = error
+
+    try:
+        logger.info(f"Sending callback to {callback_url} for request {request_id}")
+        response = requests.post(
+            callback_url,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=CALLBACK_TIMEOUT
+        )
+
+        if response.status_code in [200, 201, 202]:
+            logger.info(f"Callback successful for request {request_id}")
+            return True
+        else:
+            logger.warning(f"Callback returned status {response.status_code}: {response.text}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Callback failed for request {request_id}: {str(e)}")
+        return False
+
+
+def process_async_analysis(
+    request: AnalysisRequest,
+    file_path: str,
+    cleanup_file: bool = True
+):
+    try:
+        logger.info(f"Starting async analysis for request {request.request_id}")
+
+        async_analysis_manager.update_request(
+            request.request_id,
+            status='processing'
+        )
+
+        result = image_analyzer.analyze(file_path, request.analysis_type)
+
+        async_analysis_manager.update_request(
+            request.request_id,
+            status='completed',
+            result=result
+        )
+
+        logger.info(f"Analysis completed for request {request.request_id}")
+
+        if request.callback_url:
+            success = send_callback(
+                callback_url=request.callback_url,
+                request_id=request.request_id,
+                ticket_id=request.ticket_id,
+                evidence_id=request.evidence_id,
+                status='completed',
+                result=result
+            )
+
+            if not success:
+                logger.warning(f"Callback failed for request {request.request_id}, but analysis completed")
+
+    except Exception as e:
+        logger.error(f"Async analysis failed for request {request.request_id}: {str(e)}")
+        async_analysis_manager.update_request(
+            request.request_id,
+            status='failed',
+            error=str(e)
+        )
+
+        if request.callback_url:
+            send_callback(
+                callback_url=request.callback_url,
+                request_id=request.request_id,
+                ticket_id=request.ticket_id,
+                evidence_id=request.evidence_id,
+                status='failed',
+                error=str(e)
+            )
+
+    finally:
+        if cleanup_file and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Cleaned up temporary file: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up file {file_path}: {str(e)}")
 
 
 @app.route('/health', methods=['GET'])
@@ -370,6 +575,161 @@ def extract_keywords():
         })
     except Exception as e:
         logger.error(f"Keyword extraction error: {str(e)}")
+        return jsonify({
+            'code': 500,
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/image/async-analyze', methods=['POST'])
+def async_analyze_image():
+    try:
+        if 'file' not in request.files:
+            return jsonify({
+                'code': 400,
+                'message': 'No file uploaded'
+            }), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({
+                'code': 400,
+                'message': 'No selected file'
+            }), 400
+
+        ticket_id = request.form.get('ticket_id')
+        evidence_id = request.form.get('evidence_id')
+        callback_url = request.form.get('callback_url')
+        analysis_type = request.form.get('analysis_type', 'all')
+
+        if not ticket_id or not evidence_id:
+            return jsonify({
+                'code': 400,
+                'message': 'ticket_id and evidence_id are required'
+            }), 400
+
+        try:
+            ticket_id_int = int(ticket_id)
+            evidence_id_int = int(evidence_id)
+        except ValueError:
+            return jsonify({
+                'code': 400,
+                'message': 'Invalid ticket_id or evidence_id'
+            }), 400
+
+        file_path = os.path.join(
+            app.config['UPLOAD_FOLDER'],
+            f"{ticket_id}_{evidence_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+        )
+        file.save(file_path)
+
+        analysis_request = async_analysis_manager.create_request(
+            ticket_id=ticket_id_int,
+            evidence_id=evidence_id_int,
+            analysis_type=analysis_type,
+            callback_url=callback_url
+        )
+
+        thread = threading.Thread(
+            target=process_async_analysis,
+            args=(analysis_request, file_path, True)
+        )
+        thread.daemon = True
+        thread.start()
+
+        return jsonify({
+            'code': 202,
+            'message': 'Analysis request accepted',
+            'data': {
+                'request_id': analysis_request.request_id,
+                'ticket_id': analysis_request.ticket_id,
+                'evidence_id': analysis_request.evidence_id,
+                'status': analysis_request.status,
+                'callback_url': analysis_request.callback_url
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Async analysis error: {str(e)}")
+        return jsonify({
+            'code': 500,
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/image/analyze/<request_id>', methods=['GET'])
+def get_analysis_status(request_id):
+    try:
+        req = async_analysis_manager.get_request(request_id)
+        if not req:
+            return jsonify({
+                'code': 404,
+                'message': f"Analysis request not found: {request_id}"
+            }), 404
+
+        return jsonify({
+            'code': 200,
+            'data': {
+                'request_id': req.request_id,
+                'ticket_id': req.ticket_id,
+                'evidence_id': req.evidence_id,
+                'status': req.status,
+                'result': req.result,
+                'error': req.error,
+                'created_at': req.created_at.isoformat()
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Get analysis status error: {str(e)}")
+        return jsonify({
+            'code': 500,
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/image/validate', methods=['POST'])
+def validate_analysis_request():
+    try:
+        data = request.get_json()
+        request_id = data.get('request_id')
+        ticket_id = data.get('ticket_id')
+        evidence_id = data.get('evidence_id')
+
+        if not all([request_id, ticket_id, evidence_id]):
+            return jsonify({
+                'code': 400,
+                'message': 'request_id, ticket_id, and evidence_id are required'
+            }), 400
+
+        try:
+            ticket_id_int = int(ticket_id)
+            evidence_id_int = int(evidence_id)
+        except ValueError:
+            return jsonify({
+                'code': 400,
+                'message': 'Invalid ticket_id or evidence_id'
+            }), 400
+
+        is_valid, message = async_analysis_manager.validate_request(
+            request_id=request_id,
+            ticket_id=ticket_id_int,
+            evidence_id=evidence_id_int
+        )
+
+        return jsonify({
+            'code': 200,
+            'data': {
+                'valid': is_valid,
+                'message': message,
+                'request_id': request_id,
+                'ticket_id': ticket_id,
+                'evidence_id': evidence_id
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Validation error: {str(e)}")
         return jsonify({
             'code': 500,
             'message': str(e)

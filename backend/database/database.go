@@ -42,6 +42,7 @@ func migrate() error {
 		&models.Seller{},
 		&models.Order{},
 		&models.Ticket{},
+		&models.AnalysisRequest{},
 		&models.TicketEvidence{},
 		&models.TicketMessage{},
 		&models.TicketActivity{},

@@ -111,8 +111,34 @@ type Ticket struct {
 	NegotiationStartAt  *time.Time `json:"negotiation_start_at"`
 	ArbitrationStartAt  *time.Time `json:"arbitration_start_at"`
 	ClosedAt            *time.Time `json:"closed_at"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+
+	ArbitrationLocked     bool       `gorm:"default:false" json:"arbitration_locked"`
+	ArbitrationLockBy     *uint      `json:"arbitration_lock_by"`
+	ArbitrationLockAt     *time.Time `json:"arbitration_lock_at"`
+	ArbitrationLockReason string     `gorm:"type:text" json:"arbitration_lock_reason"`
+	AutoDecisionPaused    bool       `gorm:"default:false" json:"auto_decision_paused"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type AnalysisRequest struct {
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	RequestID       string     `gorm:"uniqueIndex;size:36;not null" json:"request_id"`
+	TicketID        uint       `gorm:"not null;index" json:"ticket_id"`
+	Ticket          Ticket     `gorm:"foreignKey:TicketID" json:"ticket,omitempty"`
+	EvidenceID      uint       `gorm:"not null;uniqueIndex" json:"evidence_id"`
+	Evidence        TicketEvidence `gorm:"foreignKey:EvidenceID" json:"evidence,omitempty"`
+	Status          string     `gorm:"size:20;default:'pending'" json:"status"`
+	AnalysisType    string     `gorm:"size:50" json:"analysis_type"`
+	ErrorCode       string     `gorm:"size:100" json:"error_code"`
+	ErrorMessage    string     `gorm:"type:text" json:"error_message"`
+	RetryCount      int        `gorm:"default:0" json:"retry_count"`
+	RequestedAt     time.Time  `json:"requested_at"`
+	CompletedAt     *time.Time `json:"completed_at"`
+	CallbackURL     string     `gorm:"size:500" json:"callback_url"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type TicketEvidence struct {
@@ -131,6 +157,8 @@ type TicketEvidence struct {
 	IsAnalyzed  bool      `gorm:"default:false" json:"is_analyzed"`
 	Analysis    string    `gorm:"type:text" json:"analysis"`
 	AnalysisScore float64  `json:"analysis_score"`
+	AnalysisRequestID string `gorm:"size:36;index" json:"analysis_request_id"`
+	AnalysisStatus    string `gorm:"size:20;default:'pending'" json:"analysis_status"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -251,6 +279,7 @@ func (UserProfile) TableName() string   { return "user_profiles" }
 func (Seller) TableName() string        { return "sellers" }
 func (Order) TableName() string         { return "orders" }
 func (Ticket) TableName() string        { return "tickets" }
+func (AnalysisRequest) TableName() string { return "analysis_requests" }
 func (TicketEvidence) TableName() string { return "ticket_evidences" }
 func (TicketMessage) TableName() string  { return "ticket_messages" }
 func (TicketActivity) TableName() string { return "ticket_activities" }
