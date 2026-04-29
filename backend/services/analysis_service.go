@@ -80,6 +80,42 @@ func (s *AnalysisService) GenerateRequestID() string {
 }
 
 func (s *AnalysisService) CreateAnalysisRequest(tx *gorm.DB, ticketID uint, evidenceID uint, analysisType string) (*models.AnalysisRequest, error) {
+	if ticketID == 0 {
+		return nil, errors.New("ticket_id is required")
+	}
+	if evidenceID == 0 {
+		return nil, errors.New("evidence_id is required")
+	}
+
+	var evidence models.TicketEvidence
+	if err := tx.First(&evidence, evidenceID).Error; err != nil {
+		return nil, fmt.Errorf("evidence not found: %w", err)
+	}
+
+	if evidence.TicketID != ticketID {
+		return nil, fmt.Errorf("evidence ticket_id mismatch: evidence belongs to ticket %d, but request is for ticket %d",
+			evidence.TicketID, ticketID)
+	}
+
+	if evidence.AnalysisRequestID != "" {
+		var existingReq models.AnalysisRequest
+		if err := tx.Where("request_id = ?", evidence.AnalysisRequestID).First(&existingReq).Error; err == nil {
+			if existingReq.Status == "pending" || existingReq.Status == "processing" {
+				return nil, fmt.Errorf("evidence already has an active analysis request: %s",
+					evidence.AnalysisRequestID)
+			}
+		}
+	}
+
+	var ticket models.Ticket
+	if err := tx.First(&ticket, ticketID).Error; err != nil {
+		return nil, fmt.Errorf("ticket not found: %w", err)
+	}
+
+	if ticket.FinalDecision != nil {
+		return nil, errors.New("cannot create analysis request: ticket already has final decision")
+	}
+
 	requestID := s.GenerateRequestID()
 
 	request := &models.AnalysisRequest{
@@ -95,28 +131,24 @@ func (s *AnalysisService) CreateAnalysisRequest(tx *gorm.DB, ticketID uint, evid
 	}
 
 	if err := tx.Create(request).Error; err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create analysis request: %w", err)
 	}
 
-	var evidence models.TicketEvidence
-	if err := tx.First(&evidence, evidenceID).Error; err != nil {
-		return nil, err
-	}
 	evidence.AnalysisRequestID = requestID
 	evidence.AnalysisStatus = "pending"
 	if err := tx.Save(&evidence).Error; err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to update evidence analysis status: %w", err)
 	}
 
 	activity := &models.TicketActivity{
 		TicketID:   ticketID,
 		Action:     "analysis_requested",
 		ActionType: "update",
-		Details:    fmt.Sprintf("图像分析请求已创建，RequestID: %s", requestID),
+		Details:    fmt.Sprintf("图像分析请求已创建，RequestID: %s, EvidenceID: %d", requestID, evidenceID),
 		CreatedAt:  time.Now(),
 	}
 	if err := tx.Create(activity).Error; err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create activity log: %w", err)
 	}
 
 	return request, nil
@@ -209,6 +241,16 @@ func (s *AnalysisService) callMLService(imagePath string, analysisType string) (
 }
 
 func (s *AnalysisService) ValidateCallback(callbackData *AnalysisCallbackData) (*models.AnalysisRequest, error) {
+	if callbackData.RequestID == "" {
+		return nil, errors.New("request_id is required")
+	}
+	if callbackData.TicketID == 0 {
+		return nil, errors.New("ticket_id is required")
+	}
+	if callbackData.EvidenceID == 0 {
+		return nil, errors.New("evidence_id is required")
+	}
+
 	var request models.AnalysisRequest
 	if err := database.DB.Where("request_id = ?", callbackData.RequestID).First(&request).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -218,11 +260,28 @@ func (s *AnalysisService) ValidateCallback(callbackData *AnalysisCallbackData) (
 	}
 
 	if request.RequestID != callbackData.RequestID {
-		return nil, ErrRequestIDMismatch
+		return nil, fmt.Errorf("%w: expected %s, got %s", ErrRequestIDMismatch, request.RequestID, callbackData.RequestID)
 	}
 
 	if request.TicketID != callbackData.TicketID {
-		return nil, ErrTicketIDMismatch
+		return nil, fmt.Errorf("%w: expected %d, got %d", ErrTicketIDMismatch, request.TicketID, callbackData.TicketID)
+	}
+
+	if request.EvidenceID != callbackData.EvidenceID {
+		return nil, fmt.Errorf("evidence_id mismatch: expected %d, got %d", request.EvidenceID, callbackData.EvidenceID)
+	}
+
+	var evidence models.TicketEvidence
+	if err := database.DB.First(&evidence, request.EvidenceID).Error; err != nil {
+		return nil, fmt.Errorf("evidence not found: %w", err)
+	}
+
+	if evidence.TicketID != request.TicketID {
+		return nil, errors.New("evidence ticket_id mismatch with request ticket_id")
+	}
+
+	if evidence.AnalysisRequestID != "" && evidence.AnalysisRequestID != request.RequestID {
+		return nil, errors.New("evidence already linked to different analysis request")
 	}
 
 	if request.Status == "completed" || request.Status == "failed" {
