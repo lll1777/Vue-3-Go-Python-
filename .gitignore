@@ -1,0 +1,65 @@
+# Vue 3 Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.local
+frontend/.DS_Store
+
+# Go Backend
+backend/data/
+backend/logs/
+backend/uploads/
+backend*.db
+backend*.sqlite
+backend*.sqlite3
+
+# Python ML Service
+ml-service/__pycache__/
+ml-service/*.py[cod]
+ml-service/*$py.class
+ml-service/.Python
+ml-service/build/
+ml-service/develop-eggs/
+ml-service/dist/
+ml-service/downloads/
+ml-service/eggs/
+ml-service/.eggs/
+ml-service/lib/
+ml-service/lib64/
+ml-service/parts/
+ml-service/sdist/
+ml-service/var/
+ml-service/wheels/
+ml-service/*.egg-info/
+ml-service/.installed.cfg
+ml-service/*.egg
+ml-service/venv/
+ml-service/env/
+ml-service/.env
+ml-service/.venv
+ml-service/ENV/
+ml-service/uploads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.*.local

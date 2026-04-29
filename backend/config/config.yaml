@@ -1,0 +1,31 @@
+server:
+  port: 8080
+  mode: debug
+
+database:
+  driver: sqlite
+  dsn: ./data/dispute.db
+
+jwt:
+  secret: your-secret-key-here-change-in-production
+  expires: 24
+
+log:
+  level: debug
+  filename: ./logs/app.log
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+
+rule_engine:
+  service_url: http://localhost:5000
+
+image_analysis:
+  service_url: http://localhost:5001
+
+sla:
+  evidence_hours: 24
+  negotiation_hours: 48
+  arbitration_hours: 72
+  warning_threshold: 0.8
+  critical_threshold: 0.95
